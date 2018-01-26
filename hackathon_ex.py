@@ -62,3 +62,43 @@ sentence = 'double room near kensington'
 sentence_vector = d2vmodel.infer_vector(sentence.split())
 d2vmodel.similar_by_vector(sentence_vector,topn=20)
 
+
+########## now try to predict accomodation type from accomodation title
+# 1. prepare titles vectors and labels
+title_vectors = np.array([d2vmodel.infer_vector(tokenized_names) for tokenized_names in listings['tokenized_names']])
+labels =  np.array(listings['room_type'])
+
+from sklearn import preprocessing
+le = preprocessing.LabelEncoder()
+encoded_labels = le.fit_transform(labels)
+
+# 2. split into train and test
+from sklearn.model_selection import train_test_split
+
+title_train,title_test, title_vectors_train,title_vectors_test,encoded_labels_train,encoded_labels_test = train_test_split( np.array(listings['name']), title_vectors,encoded_labels,stratify = encoded_labels, train_size = 0.8,random_state = 1)
+
+# 3. prepare for xgboost classifier
+import xgboost as xgb
+training_all =  xgb.DMatrix(data= title_vectors_train, label=encoded_labels_train)
+testing_all =  xgb.DMatrix(data= title_vectors_test, label=encoded_labels_test)
+param = {'eta':0.007, 'max_depth':5,'nthread':15,'num_class':len(np.unique(le.classes_)),'seed':1,'objective':'multi:softprob','eval_metric':['merror','mlogloss'],'subsample':0.8, 'debug_verbose': 2}
+trained_xgb = xgb.train(param, training_all, num_boost_round=1000, early_stopping_rounds=10 ,verbose_eval=True,evals=[(training_all,'train'),(testing_all,'test')])
+
+test_preds = trained_xgb.predict(testing_all)
+topk = 1
+predicted_labels = le.inverse_transform(np.argsort(test_preds)[:,-topk:])
+predicted_proba = np.sort(test_preds)[:,-topk:]
+
+from sklearn.metrics import classification_report
+print(classification_report(encoded_labels_test,np.argsort(test_preds)[:,-1:]))
+
+# 4. try the base line: using random forest
+from sklearn.ensemble import *
+rf = RandomForestClassifier(n_estimators=500,n_jobs=-1,random_state=1)
+rf.fit(title_vectors_train,encoded_labels_train)
+test_preds = rf.predict(title_vectors_test)
+print(classification_report(encoded_labels_test,test_preds))
+# Note that the results from RandomForest sufffer imbalance classes problem. So it is a good idea to upsample a bit for the shared accomodation
+
+# the score is lower than the R version. This error mainly comes from our vectors quality (we trained the vectors using our own corpus, which is very limited -- and a lots of noise) 
+# so I think it would be better use a pretrained vector, either from Google word2vec or Glove as in the R version
